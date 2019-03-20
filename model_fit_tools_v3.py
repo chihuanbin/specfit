@@ -15,13 +15,13 @@ def acc_prob(current_sol, test_sol, temp):
 		else:
 			return p
 
-def neighbor(p0, T, bl, ul, seed):
+def neighbor(p0, T, bl, ul):
 	'''
 	bl is bottom limit array (same length as p0)
 	ul is upper limit array (same length as p0)
 	(for parameters)
 	'''
-	np.random.seed(seed)
+	#np.random.seed(seed)
 	r = np.random.randint(len(p0))
 	p0[r] = np.random.uniform(bl[r], ul[r])
 	return p0
@@ -43,7 +43,6 @@ def sim_anneal(walker, p0, T, T_min, alpha, niter, nspec, ndust, data, flux_rati
 
 	eventually return the final answer.
 	'''
-	seed = int(np.random.uniform(1927018 * walker))
 
 	cs = mft.logposterior(p0, nspec, ndust, data, flux_ratio, broadening, r, wu = wu, pysyn = pysyn, dust = dust, norm = norm)
 	if np.isnan(cs) or np.isinf(np.abs(cs)):
@@ -58,13 +57,15 @@ def sim_anneal(walker, p0, T, T_min, alpha, niter, nspec, ndust, data, flux_rati
 	while T > T_min:
 		i = 0
 		while i <= niter:
-			new_p0 = neighbor(p0, T, [2000, 2000, 2, 2], [10000, 10000, 5.5, 5.5], seed)
+			new_p0 = neighbor(p0, T, [2000, 2000, 2, 2], [10000, 10000, 5.5, 5.5])
 			new_cs = mft.logposterior(new_p0, nspec, ndust, data, flux_ratio, broadening, r, wu = wu, pysyn = pysyn, dust = dust, norm = norm)
 
 
 			if np.isnan(new_cs) or np.isinf(np.abs(new_cs)):
 				new_cs = np.inf
-
+			np.vstack((p, new_p0))
+			c.append(cs)
+			temps.append(T)  
 			if new_cs < cs:
 				p0 = new_p0
 				cs = new_cs
@@ -75,10 +76,7 @@ def sim_anneal(walker, p0, T, T_min, alpha, niter, nspec, ndust, data, flux_rati
 					cs = new_cs
 			if cs < best_chi:
 				best_chi = cs
-				best_p0 = p0  
-			np.vstack((p, p0))
-			c.append(cs)
-			temps.append(T)            
+				best_p0 = p0            
 			i += 1
 		T = T*alpha
 

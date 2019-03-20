@@ -554,10 +554,11 @@ def loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', p
 	if dust == True:
 		test_spec = make_bb_continuum([wl[:][1], test_spec], p0[2 * nspec : -1], wl_unit = w)
 
-	#test_spec = broaden(wl[:][1], test_spec, broadening, 0, 0, plot=False)
+	test_wl, test_spec = broaden(wl[:][1], test_spec, broadening, 0, 0, plot=False)
 
 	init_cs, pval = scipy.stats.chisquare(data[:][-1], test_spec)
-	#print(init_cs)
+	print(np.shape(test_spec))
+
 	if np.isnan(init_cs):
 		init_cs = -np.inf
 
