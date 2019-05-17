@@ -94,10 +94,6 @@ def find_nearest(array, value):
 	idx = (np.abs(array - value)).argmin()
 	return idx
 
-def chisq(model, data, var = 0.02):
-	xs = [((model[n] - data[n])**2)/var**2 for n in range(len(model))]
-	return np.sqrt(np.sum(xs))
-
 def shift(wl, spec, rv, bcarr, **kwargs):
 	'''
 	for bccorr, use bcarr as well, which should be EITHER:
@@ -190,7 +186,7 @@ def rmlines(wl, spec, **kwargs):
 			for n in range(len(wl)):
 				if wl[n] > wl[end1] and wl[n] < wl[end2] and spec[n] > (np.mean(spec[range(end1 - 10, end1)]) + np.mean(spec[range(end2, end2 + 10)]))/2:
 					spec[n] = (np.mean(spec[range(end1 - 10, end1)]) + np.mean(spec[range(end2, end2 + 10)]))/2
-	#print(len(spec), len(wl))
+	print(len(spec), len(wl))
 	return spec
 
 def make_reg(wl, flux, waverange):
@@ -363,20 +359,12 @@ def add_spec(wl, spec, flux_ratio, normalize = True):#, waverange):
 	add spectra together given an array of spectra and flux ratios
 	TO DO: handle multiple flux ratios in different spectral ranges
 
-	input: wavelength array (of vectors), spectrum array (of vectors), 
-			flux ratio array with len = len(spectrum_array) - 1, 
-			where the final entry is the wavelength to normalize at, 
-			and whether or not to normalize (default is True)
+	input: wavelength array (of vectors), spectrum array (of vectors), flux ratio array with len = len(spectrum_array) - 1, whether or not to normalize (default is True)
 	output: spectra added together with the given flux ratio
 	'''
-	wl_norm = find_nearest(wl[1][:], flux_ratio[-1])
-	spec1 = spec[1][:]
-	for n in range(1, len(spec)-1):
-		spec2 = spec[n+1][:]
-		ratio = spec2[wl_norm]/spec1[wl_norm]
-		num = flux_ratio[n]/ratio
-
-		spec2 = [spec2[k] * num for k in range(len(spec1))]
+	spec1 = spec[0]
+	for n in range(len(flux_ratio)):
+		spec2 = [spec[n+1][k] * flux_ratio[n] for k in range(len(spec1))]
 		spec1 = [spec1[k] + spec2[k] for k in range(len(spec1))]
 	if normalize == True:
 	#normalize and return
@@ -406,8 +394,7 @@ def make_bb_continuum(wl, spec, dust_arr, wl_unit = 'um'):
 			spec = [spec[n] + pl[n] for n in range(len(pl))]
 	return spec
 
-def fit_spec(n_walkers, wl, flux, reg, fr, guess_init, sig_init = {'t':[200, 200], 'lg':[0.2, 0.2], \
-		'dust': [100]}, wu='um', burn = 100, cs = 10, steps = 200, pysyn=False, conv = True, dust = False):
+def fit_spec(n_walkers, wl, flux, reg, fr, guess_init, sig_init = {'t':[200, 200], 'lg':[0.2, 0.2], 'dust': [100]}, wu='um', burn = 100, cs = 10, steps = 200, pysyn=False, conv = True, dust = False):
 	##print(guess_init)
 	#does an MCMC to fit a combined model spectrum to an observed single spectrum
 	#guess_init and sig_init should be dictionaries of component names and values for the input guess and the 
@@ -431,7 +418,7 @@ def fit_spec(n_walkers, wl, flux, reg, fr, guess_init, sig_init = {'t':[200, 200
 		init_cspec = add_dust(init_cspec, guess_init['dust'][0])
 
 	#calculate the chi square value of that fit
-	init_cs= chisq(flux, init_cspec)
+	init_cs, pval = scipy.stats.chisquare(flux, init_cspec)
 	#that becomes your comparison chi square
 	chi = init_cs
 	#make a random seed based on your number of walkers
@@ -474,7 +461,7 @@ def fit_spec(n_walkers, wl, flux, reg, fr, guess_init, sig_init = {'t':[200, 200
 				test_cspec = add_dust(test_cspec, var_par[4])
 
 			#calc chi square between data and proposed change
-			test_cs = chisq(test_cspec, flux)
+			test_cs, pval = scipy.stats.chisquare(test_cspec, flux)
 
 			lh = np.exp(-1 * (init_cs)/2 + (test_cs)/2)
 
@@ -487,6 +474,7 @@ def fit_spec(n_walkers, wl, flux, reg, fr, guess_init, sig_init = {'t':[200, 200
 			if n > burn:
 				sp = np.vstack((sp, gi))
 				savechi.append(chi)
+				print(n, chi)
 				if conv == True:
 					if savechi[-1] <= cs:
 						n = steps + burn
@@ -532,25 +520,19 @@ def loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', p
 	current options: arbitrary stars, dust (multi-valued). 
 	To do: fit for broadening or vsini,  
 	"""
-	le = len(data[:][1])
+	le = len(data[:][0])
 
 	wl = np.zeros(le)
 	spec = np.zeros(le)
 
 	for n in range(nspec):
-		if len(p0) == nspec:
-			lg = 4.5
-		else:
-			lg = p0[nspec + n]
-
-		ww, spex = get_spec(p0[n], lg, normalize = norm, reg = r, wlunit = w, pys = pysyn)
+		ww, spex = get_spec(p0[n], p0[nspec + n], normalize = norm, reg = r, wlunit = w, pys = pysyn)
 
 		wl1 = np.linspace(min(ww), max(ww), le)
 
 		if len(spex) == 0:
-			spex = np.ones(len(ww))
+			spex = np.ones(le)
 
-		#print(le, np.shape(ww), np.shape(spex))
 		intep = scipy.interpolate.interp1d(ww, spex)
 		spec1 = intep(wl1)
 
@@ -562,9 +544,10 @@ def loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', p
 	if dust == True:
 		test_spec = make_bb_continuum([wl[:][1], test_spec], p0[2 * nspec : -1], wl_unit = w)
 
-	test_wl, test_spec = broaden(wl[:][1], test_spec, broadening, 0, 0, plot=False)
-	init_cs = chisq(test_spec, data[:][-1])
+	#test_spec = broaden(wl[:][1], test_spec, broadening, 0, 0, plot=False)
 
+	init_cs, pval = scipy.stats.chisquare(data[:][-1], test_spec)
+	#print(init_cs)
 	if np.isnan(init_cs):
 		init_cs = -np.inf
 
@@ -574,17 +557,11 @@ def loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', p
 
 def logprior(p0, nspec, ndust):
 	temps = p0[0:nspec]
-	lgs = []
-
-	if len(p0) > nspec:
-		lgs = p0[nspec:2 * nspec]
-	else:
-		while len(lgs) < nspec:
-			lgs.append(4.5)
+	lgs = p0[nspec:2 * nspec]
 	if ndust > 0:
 		dust = p0[2 * nspec : 2 * nspec + ndust]
 	for p in range(nspec):
-		if 2000 < temps[p] < 5000 and 2 < lgs[p] < 5.5:
+		if 2000 < temps[p] < 15000 and 0 < lgs[p] < 5.5:
 			return 0.0
 		else:
 			return -np.inf
@@ -598,7 +575,10 @@ def logposterior(p0, nspec, ndust, data, flux_ratio, broadening, r, wu = 'aa', p
 		data (list): the set of data/observations
 	Assuming a uniform prior for now
 	"""
-	lp = logprior(p0, nspec, ndust)
+	if p0[nspec] <= 5.5 and p0[nspec + 1] <= 5.5 and p0[nspec] > 0 and p0[nspec + 1] > 0:
+		lp = logprior(p0, nspec, ndust)
+	else:
+		lp = -np.inf
 
 	# if the prior is not finite return a probability of zero (log probability of -inf)
 	if not np.isfinite(lp):
@@ -609,7 +589,7 @@ def logposterior(p0, nspec, ndust, data, flux_ratio, broadening, r, wu = 'aa', p
 	return lp + lh
 
 
-def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio, broadening, r, nthin=10, w = 'aa', pys = False, du = False, no = True, which='em'):
+def run_emcee(nwalkers, nsteps, ndim, pos, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', pys = False, du = False, no = True):
 	'''
 	p0 is a dictionary containing the initial guesses for temperature and log g.
 	data is the spectrum to fit to
@@ -617,69 +597,36 @@ def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio
 	r is the region to fit within
 	'''
 
-	if which == 'em':
-		sampler = emcee.EnsembleSampler(nwalkers, ndim, logposterior, threads=nwalkers, args=[nspec, ndust, data, flux_ratio, broadening, r], \
-		kwargs={'wu':w, 'pysyn': pys, 'dust': du, 'norm':no})
+	sampler = emcee.EnsembleSampler(nwalkers, ndim, logposterior, args=(nspec, ndust, data, flux_ratio, broadening, r), kwargs ={'wu': w, 'pysyn': pys, 'dust': du, 'norm':no}, threads = 4)
 
-	elif which == 'pt':
-		ntemps = int(input('How many temperatures would you like to try? '))
-		sampler = emcee.PTSampler(ntemps, nwalkers, ndim, loglikelihood, logprior, threads=nwalkers, loglargs=[\
-		nspec, ndust, data, flux_ratio, broadening, r], logpargs=[nspec, ndust], loglkwargs={'w':w, 'pysyn': pys, 'dust': du, 'norm':no})
-
-		for p, lnprob, lnlike in sampler.sample(pos, iterations=nburn):
-			pass
-		sampler.reset()
-
-		#for p, lnprob, lnlike in sampler.sample(p, lnprob0=lnprob,lnlike0=lnlike, iterations=nsteps, thin=nthin):
-		#	pass
-
-		assert sampler.chain.shape == (ntemps, nwalkers, nsteps/nthin, ndim)
-
-		# Chain has shape (ntemps, nwalkers, nsteps, ndim)
-		# Zero temperature mean:
-		mu0 = np.mean(np.mean(sampler.chain[0,...], axis=0), axis=0)
-
-		try:
-			# Longest autocorrelation length (over any temperature)
-			max_acl = np.max(sampler.acor)
-			print('max acl: ', max_acl)
-			np.savetxt('results/acor.txt', sampler.acor)
-		except:
-			pass
-
+	p, prob, state = sampler.run_mcmc(pos, nsteps)
+	
 	f = open("results/chain.txt", "w")
 	f.close()
 
-	for test in sampler.sample(pos, iterations = nburn, thin = nthin):
-		pos = test[0]
-		pass
-	sampler.reset()
-	
-	for result in sampler.sample(pos, iterations=nsteps, thin = nthin):
+	for result in sampler.sample(p, iterations=100, storechain=False):
 		position = result[0]
 		f = open("results/chain.txt", "w")
 		for k in range(position.shape[0]):
 			f.write("{} {}\n".format(k, str(position[k])))
 		f.close()
+
+
 	for i in range(ndim):
 		plt.figure(i)
-		plt.hist(sampler.flatchain[:,i], nsteps, histtype="step")
+		plt.hist(sampler.flatchain[:,i], 100, color="k", histtype="step")
 		plt.title("Dimension {0:d}".format(i))
 		plt.savefig('results/plots/{}.pdf'.format(i))
 		plt.close()
 
 		plt.figure(i)
-
-		try:
-			for n in range(nwalkers):
-				plt.plot(np.arange(nsteps),sampler.chain[n, :, i])
-			plt.savefig('results/plots/chain_{}.pdf'.format(i))
-			plt.close()
-		except:
-			pass
+		for n in range(nwalkers):
+			plt.plot(np.arange(nsteps),sampler.chain[n, :, i], color = 'k')
+		plt.savefig('results/plots/chain_{}.pdf'.format(i))
+		plt.close()
+	chain = sampler.chain[:, :, 0].T
+	N = np.exp(np.linspace(np.log(100), np.log(chain.shape[1]), 10)).astype(int)
 	try:
-		chain = sampler.chain[:, :, 0].T
-		N = np.exp(np.linspace(np.log(100), np.log(chain.shape[1]), 10)).astype(int)
 		new = np.empty(len(N))
 		for i, n in enumerate(N):
 			new[i] = emcee.autocorr.integrated_time(chain[:, :n])
@@ -695,11 +642,9 @@ def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio
 		plt.close()
 	except:
 		pass;
-
 	samples = sampler.chain[:, :, :].reshape((-1, ndim))
 	fig = corner.corner(samples)
 	fig.savefig("results/plots/triangle.pdf")
 	plt.close()
 
-	print("Mean acceptance fraction: {0:.3f}".format(np.mean(sampler.acceptance_fraction)))
-	return
+	return("Mean acceptance fraction: {0:.3f}".format(np.mean(sampler.acceptance_fraction)))

@@ -5,25 +5,37 @@ import matplotlib.pyplot as plt
 from random import random
 import multiprocessing as mp
 
+
+#output acceptance probability
+#change variation so that neighbors are pulled in a gaussian way where FWHM is related to the temperature
+#Edge effects might be bad - edges suppress probs. 1) set edges far away 2) compute the bias/forget that you took the step at all (without implementing a hard edge)
+#(I did #2)
+
 def acc_prob(current_sol, test_sol, temp):
 	if np.isnan(test_sol) or np.isinf(np.abs(test_sol)):
 		return 0
 	else:
-		p = np.exp((test_sol - current_sol)/ temp)
-		if p > 1:
-			return 1
-		else:
-			return p
+		p = np.exp((current_sol - test_sol)**2/(temp**2))
+		print(p)
+		return p
 
-def neighbor(p0, T, bl, ul):
+def neighbor(p0, T, bl, ul, seed):
 	'''
 	bl is bottom limit array (same length as p0)
 	ul is upper limit array (same length as p0)
 	(for parameters)
 	'''
-	#np.random.seed(seed)
-	r = np.random.randint(len(p0))
-	p0[r] = np.random.uniform(bl[r], ul[r])
+	np.random.seed(seed)
+	in_range = False
+
+	while in_range == False:
+		r = np.random.randint(0, 2)
+		p0[r] = np.random.normal(p0[r], T)
+
+		if p0[r] >= bl[r] and p0[r] <= ul[r]:
+			in_range = True
+		else:
+			in_range = False
 	return p0
 
 
@@ -50,20 +62,20 @@ def sim_anneal(walker, p0, T, T_min, alpha, niter, nspec, ndust, data, flux_rati
 	best_chi = cs
 	best_p0 = p0
 
-	p = p0
+	p = [p0]
 	c = [cs]
 	temps = [T]
 
 	while T > T_min:
 		i = 0
 		while i <= niter:
-			new_p0 = neighbor(p0, T, [2000, 2000, 2, 2], [10000, 10000, 5.5, 5.5])
+			seed = int((i + walker) * best_chi * 10289)
+			new_p0 = neighbor(p0, T, [2000, 2000, 2, 2], [6000, 6000, 5.5, 5.5], seed)
 			new_cs = mft.logposterior(new_p0, nspec, ndust, data, flux_ratio, broadening, r, wu = wu, pysyn = pysyn, dust = dust, norm = norm)
-
 
 			if np.isnan(new_cs) or np.isinf(np.abs(new_cs)):
 				new_cs = np.inf
-			np.vstack((p, new_p0))
+			p = np.vstack((p, new_p0))	
 			c.append(cs)
 			temps.append(T)  
 			if new_cs < cs:
@@ -71,16 +83,17 @@ def sim_anneal(walker, p0, T, T_min, alpha, niter, nspec, ndust, data, flux_rati
 				cs = new_cs
 			else:
 				ap = acc_prob(cs, new_cs, T)
-				if ap > np.random.uniform():
+				if ap - np.random.uniform() * np.exp(-(cs / T)**2) > 0.5:
 					p0 = new_p0
 					cs = new_cs
 			if cs < best_chi:
 				best_chi = cs
 				best_p0 = p0            
 			i += 1
+		print(T)
 		T = T*alpha
 
-	np.savetxt('params_walker{}.txt'.format(walker), np.vstack((temps, c, p)), header='# Temperature, chi-square, T1, T2, log g 1, log g 2')
+	np.savetxt('results/params_walker{}.txt'.format(walker), np.column_stack((temps, c, p)), header='# Temperature, chi-square, T1, T2, log g 1, log g 2')
 	return np.hstack((best_chi, best_p0))
 
 def run_sim_anneal(nwalkers, p0, T, T_min, alpha, niter, nspec, ndust, data,\
@@ -92,6 +105,7 @@ def run_sim_anneal(nwalkers, p0, T, T_min, alpha, niter, nspec, ndust, data,\
 
 	#print('Writing file')
 	np.savetxt('results/model_fit_pars.txt', out, fmt = '%.8f')
+	return
 	
 
 data_wl, data_spec = np.genfromtxt('Data/Spectra_for_Kendall/fftau_wifes_spec.csv', delimiter=',', unpack = True)
@@ -101,10 +115,10 @@ data_spec = data_spec[1:-1]
 
 cen_wl = data_wl[int(len(data_wl)/2)]
 
-p0 = [4100, 3600, 3.2, 3.5]
+p0 = [4100, 3600, 4.5, 4.5]
 
 nspec, ndust = 2, 0
 
-nwalkers, t, tm, alpha, niter = 4, 1, 0.1, 0.9, 10
+nwalkers, t, tm, alpha, niter = 4, 1, 0.1, 0.1, 4
 
 run_sim_anneal(nwalkers, p0, t, tm, alpha, niter, nspec, ndust, [data_wl, data_spec], [0.25, cen_wl], 3000, [min(data_wl), max(data_wl)], w = 'um', pys = False, du = False, no = True)
