@@ -4,6 +4,19 @@
 
 #TO DO: Write add_disk function, disk/dust to possible fit params
 
+#20190522: Added extinction with a fixed value to model fitting (prior to fit), updated models to theoretical PHOENIX BT-SETTL models with the 
+#CFIST line list downloaded from the Spanish Virtual Observatory "Theoretical Tools" resource. 
+
+"""
+.. module:: model_fit_tools_v2
+   :platform: Unix, Windows
+   :synopsis: Large package with various spectral synthesis and utility tools.
+
+.. moduleauthor:: Kendall Sullivan <kendallsullivan@utexas.edu>
+
+Dependencies: numpy, pysynphot, matplotlib, astropy, scipy, PyAstronomy, emcee, corner, extinction.
+"""
+
 import numpy as np
 #import pysynphot as ps
 import matplotlib.pyplot as plt
@@ -23,14 +36,19 @@ from scipy.interpolate import interp1d
 from scipy import ndimage
 import emcee
 import corner
+import extinction
 
 def update_progress(progress):
-	'''
-	update_progress() : Displays or updates a console progress bar
-	Accepts a float between 0 and 1. Any int will be converted to a float.
-	A value under 0 represents a 'halt'.
-	A value at 1 or bigger represents 100%
-	'''
+	"""Displays or updates a console progress bar
+
+	Args:
+		Progress (float): Accepts a float between 0 and 1. Any int will be converted to a float.
+
+	Note:
+		A value under 0 represents a 'halt'.
+		A value at 1 or bigger represents 100%
+
+	"""
 	barLength = 10 # Modify this to change the length of the progress bar
 	status = ""
 	if isinstance(progress, int):
@@ -50,24 +68,69 @@ def update_progress(progress):
 	sys.stdout.flush()
 
 def bccorr(wl, bcvel, radvel):
-	'''
-	input: wavelength vector, a barycentric or heliocentric velocity, and a systemic radial velocity.
-	**Velocities in km/s**
-	If system RV isn't known, that value can be zero.
-	outputs: a wavelength vector corrected for barycentric and radial velocities.
-	'''
+	"""Calculates a barycentric velocity correction given a barycentric and/or a radial velocity (set the unused value to zero)
+
+	Args: 
+		wl (list): wavelength vector.
+		bcvel (float): a barycentric or heliocentric velocity.
+		radvel (float): a systemic radial velocity.
+
+	Note:
+		Velocities are in km/s.
+		If system RV isn't known, that value can be zero.
+
+	Returns: 
+		lam_corr (list): a wavelength vector corrected for barycentric and radial velocities.
+
+	"""
 	lam_corr = []
 	for w in wl:
 		lam_corr.append(w * (1. + (bcvel - radvel)/3e5))
 	return lam_corr
+
+def extinct(wl, spec, av, rv = 3.1, unit = 'aa'):
+	"""Uses the package "extinction" to calculate an extinction curve for the given A_v and R_v, 
+	then converts the extinction curve to a transmission curve
+	and uses that to correct the spectrum appropriately.
+	Accepted units are angstroms ('aa', default) or microns^-1 ('invum').
+
+	Args:
+		wl (list): wavelength array
+		spec (list): flux array
+		av (float): extinction in magnitudes
+		rv (float): Preferred R_V, defaults to 3.1
+		unit (string): Unit to use. Accepts angstroms "aa" or inverse microns "invum". Defaults to angstroms.
+
+	Returns:
+		spec (list): a corrected spectrum vwith no wavelength vector. 
+
+	"""
+	ext_mag = extinction.fm07(wl, av, unit)
+	ext_flux = [10 ** (-0.4 * e) for e in ext_mag]
+	transm = ext_flux / max(ext_flux)
+	spec = [spec[n] * transm[n] for n in range(len(spec))]
+	return spec
 	
 def plots(wave, flux, l, lw=1, labels=True, xscale='log', yscale='log', save=False):
-	'''
-	make a basic plot - input a list of wave and flux arrays, and a label array for the legend
-	if you want to label your axes, set labels=True and enter them interaactively
-	you can also set xscale and yscale to what you want, and set it to save if you'd like
+	"""makes a basic plot - input a list of wave and flux arrays, and a label array for the legend.
+	If you want to label your axes, set labels=True and enter them interactively.
+	You can also set xscale and yscale to what you want, and set it to save if you'd like.
 	Natively creates a log-log plot with labels but doesn't save it.
-	'''
+	
+	Args:
+		wave (list): wavelength array
+		flux (list): flux array
+		l (list): array of string names for legend labels.
+		lw (float): linewidths for plot. Default is 1.
+		labels (boolean): Toggle axis labels. Initiates interactive labeling. Defaults to True.
+		xscale (string): Set x axis scale. Any matplotlib scale argument is allowed. Default is "log".
+		yscale (string): Set y axis scale. Any matplotlib scale argument is allowed. Default is "log".
+		save (boolean): Saves figure in local directory with an interactively requested title. Defaults to False.
+	
+	Returns:
+		None
+
+	"""
 	fig, ax = plt.subplots()
 	for n in range(len(wave)):
 		ax.plot(wave[n], flux[n], label = l[n], linewidth=lw)
@@ -83,24 +146,40 @@ def plots(wave, flux, l, lw=1, labels=True, xscale='log', yscale='log', save=Fal
 	plt.show()
 	if save == True:
 		plt.savefig('{}.pdf'.format(input('title? ')))
+	return
 
 def find_nearest(array, value):
-	'''
-	finds index in array such that the array component at the returned index is closest to the desired value.
-	Input: array, value
-	output: index at which array is closest to value
-	'''
+	"""finds index in array such that the array component at the returned index is closest to the desired value.
+	
+	Args: 
+		array (list): Array to search.
+		value (float or int): Value to find closest value to.
+
+	Returns: 
+		idx (int): index at which array is closest to value
+
+	"""
 	array = np.asarray(array)
 	idx = (np.abs(array - value)).argmin()
 	return idx
 
-def chisq(model, data, var = 0.02):
+def chisq(model, data, var = 10):
+	"""Calculates reduced chi square value of a model and data with a given variance.
+
+	Args:
+		model (list): model array.
+		data (list): data array. Must have same len() as model array.
+		variance (float): Data variance. Defaults to 10.
+
+	Returns: 
+		cs (float): Reduced chi square value.
+
+	"""
 	xs = [((model[n] - data[n])**2)/var**2 for n in range(len(model))]
 	return np.sqrt(np.sum(xs))
 
 def shift(wl, spec, rv, bcarr, **kwargs):
-	'''
-	for bccorr, use bcarr as well, which should be EITHER:
+	"""for bccorr, use bcarr as well, which should be EITHER:
 	1) the pure barycentric velocity calculated elsewhere OR
 	2) a dictionary with the following entries (all as floats, except the observatory name code, if using): 
 	{'ra': RA (deg), 'dec': dec (deg), 'obs': observatory name or location of observatory, 'date': JD of midpoint of observation}
@@ -108,10 +187,22 @@ def shift(wl, spec, rv, bcarr, **kwargs):
 	or an array containing longitude, latitude (both in deg) and altitude (in meters), in that order.
 
 	To see a list of observatory codes use "PyAstronomy.pyasl.listobservatories()".
-	'''
+	
+	Args:
+		wl (list): wavelength array
+		spec (list): flux array
+		rv (float): Rotational velocity value
+		bcarr (list): if len = 1, contains a precomputed barycentric velocity. Otherwise, should 
+			be a dictionary with the following properties: either an "obs" keyword and code from pyasl
+			or a long, lat, alt set of floats identifying the observatory coordinates.  
+
+	Returns:
+		barycentric velocity corrected wavelength vector using bccorr().
+
+	"""
 	if len(bcarr) == 1:
 		bcvel = bcarr[0]
-	if len(bcarr) > 1:
+	if not isintstance(bcarr[0], float):
 		if isinstance(bcarr['obs'], str):
 			try:
 				ob = pyasl.observatory(bcarr['obs'])
@@ -122,20 +213,25 @@ def shift(wl, spec, rv, bcarr, **kwargs):
 			lon, lat, alt = bcarr['obs'][0], bcarr['obs'][1], bcarr['obs'][2]
 		bcvel = pyasl.helcorr(lon, lat, alt, bcarr['ra'], bcarr['dec'], bcarr['date'])[0]
 
-	wl = bccorr()
+	wl = bccorr(wl, bcvel, rv)
 
-	return ''
+	return wl
 
-def broaden(even_wl, modelspec_interp, res, vsini, limb, plot = True):
-	'''
-	input: model wavelength vector, model spectrum vector, star vsin(i), the limb darkening coeffecient, 
-	the spectral resolution, and the maximum sigma to extend the resolution gaussian broadening along 
-	the spectrum
+def broaden(even_wl, modelspec_interp, res, vsini, limb, plot = False):
+	"""Adds resolution, vsin(i) broadening, taking into account limb darkening.
 
-	output: a tuple containing an evenly spaced wavelength vector spanning the width of the original wavelength 
-	range, and a corresponding flux vector
-	'''
+	Args: 
+		even_wl (list): evenly spaced model wavelength vector
+		modelspec_interp (list): model spectrum vector
+		res (float): desired spectral resolution
+		vsini (float): star vsin(i)
+		limb (float): the limb darkening coeffecient
+		plot (boolean): if True, plots the full input spectrum and the broadened output. Defaults to False.
 
+	Returns:
+		a tuple containing an evenly spaced wavelength vector spanning the width of the original wavelength range, and a corresponding flux vector
+
+	"""
 	#sig = np.mean(even_wl)/res
 
 	broad = pyasl.instrBroadGaussFast(even_wl, modelspec_interp, res, maxsig=5)
@@ -145,9 +241,9 @@ def broaden(even_wl, modelspec_interp, res, vsini, limb, plot = True):
 	else:
 		rot = broad
 
-	modelspec_interp = [(modelspec_interp[n] / max(modelspec_interp))  for n in range(len(modelspec_interp))]
-	broad = [broad[n]/max(broad) for n in range(len(broad))]
-	rot = [(rot[n]/max(rot))  for n in range(len(rot))]
+	#modelspec_interp = [(modelspec_interp[n] / max(modelspec_interp))  for n in range(len(modelspec_interp))]
+	#broad = [broad[n]/max(broad) for n in range(len(broad))]
+	#rot = [(rot[n]/max(rot))  for n in range(len(rot))]
 
 	if plot == True:
 
@@ -160,16 +256,23 @@ def broaden(even_wl, modelspec_interp, res, vsini, limb, plot = True):
 		plt.ylabel('normalized flux')
 		plt.savefig('rotation.pdf')
 
-	return(even_wl, rot)
+	return even_wl, rot
 
 def rmlines(wl, spec, **kwargs):
-	'''
-	kwargs: add_lines: to add more lines to the linelist (interactive)
-			buff: to change the buffer size, input a float here
-				otherwise the buffer size defaults to 15 angstroms
-			uni: specifies unit for input spectrum wavelengths (default is microns) [T/F]
-			conv: if unit is true, also specify conversion factor (wl = wl * conv) to microns
-	'''
+	"""Edits an input spectrum to remove emission lines
+
+	Args: 
+		wl (list): wavelength
+		spec (list): spectrum.
+		add_lines (boolean): to add more lines to the linelist (interactive)
+		buff (float): to change the buffer size, input a float here. otherwise the buffer size defaults to 15 angstroms
+		uni (boolean): specifies unit for input spectrum wavelengths (default is microns) [T/F]
+		conv (boolean): if unit is true, also specify conversion factor (wl = wl * conv) to microns
+
+	Returns: 
+		spectrum with the lines in the linelist file removed if they are in emission.
+
+	"""
 	names, transition, wav = np.genfromtxt('linelist.txt', unpack = True, autostrip = True)
 	space = 1.5e-3 #15 angstroms -> microns
 
@@ -194,31 +297,41 @@ def rmlines(wl, spec, **kwargs):
 	return spec
 
 def make_reg(wl, flux, waverange):
-	'''
-	given some wavelength range as an array, output flux and wavelength vectors within that range 
-	input: wavelength and flux vectors, wavelength range array
-	output: wavlength and flux vectors within the given range
-	TO DO: interpolate instead of just pulling the closest indices
-	'''
+	"""given some wavelength range as an array, output flux and wavelength vectors within that range.
+
+	Args:
+		wl (list): wavelength array
+		flux (list): flux array
+		waverange (list): wavelength range array
+
+	Returns: 
+		wavelength and flux vectors within the given range
+	
+	Note:
+		TO DO: interpolate instead of just pulling the closest indices
+
+	"""
 	min_wl = find_nearest(wl, min(waverange))
 	max_wl = find_nearest(wl, max(waverange))
 	wlslice = wl[min_wl:max_wl]
 	fluxslice = flux[min_wl:max_wl]
 	return wlslice, fluxslice
 
-def interp_2_spec(spec1, spec2, ep1, ep2, val, verbose = True):
-	'''
-	input: two spectrum arrays (fluxes, no wavelengths)
-	two endpoints, ep1 and ep2, which are the endpoints of the parameter we're interpolating between
-	a value between ep1 and ep2 that we wish to interpolate to
-	and verbose can print an error message if the interpolation gets messed up, if true - default is False
+def interp_2_spec(spec1, spec2, ep1, ep2, val):
+	"""Args: 
+		spec1 (list): first spectrum array (fluxes only)
+		spec2 (list): second spectrum array (fluxes only)
+		ep1 (float): First gridpoint of the value we want to interpolate to.
+		ep2 (float): Second gridpoint of the value we want to interpolate to.
+		val (float): a value between ep1 and ep2 that we wish to interpolate to.
 
-	returns: a spectrum without a wavelength parameter
-	'''
+	Returns: 
+		a spectrum without a wavelength parameter
+
+	"""
 	ret_arr = []
 	for n in range(len(spec1)):
 		v = spec1[n] + (spec2[n]-spec1[n]) * (val-ep1) / (ep2-ep1)
-		#if verbose == True:
 		if np.isnan(v) or np.isinf(v) or v < 0:
 			v = 0
 				#print('There are undefined values in the interpolation. Here are the input parameters: \n', spec1[n], spec2[n], ep1, ep2, v)
@@ -226,27 +339,75 @@ def interp_2_spec(spec1, spec2, ep1, ep2, val, verbose = True):
 	return ret_arr
 
 def make_varied_param(init, sig):
-	'''
-	randomly varies a parameter within a gaussian range based on given std deviation
-	input: initial value, std deviation of gaussian to draw from
-	output: the variation
-	'''
+	"""randomly varies a parameter within a gaussian range based on given std deviation
+
+	Args:
+		init (float): initial value
+		sig (float): std deviation of gaussian to draw from
+
+	Returns: 
+		the varied parameter.
+
+	"""
 	var = np.random.normal(init, sig)
+	
 	return var
 
-def get_spec(temp, log_g, reg, metallicity = 0, normalize = True, wlunit = 'aa', pys = False, plot = False):
-	#need to add contingency in the homemade interpolation for if metallicity is not zero
-	'''
-	Creates a spectrum from given parameters, either using the pysynphot utility from STScI or using a homemade interpolation scheme.
+def find_model(temp, logg, metal):
+	"""Finds a filename for a phoenix model with values that fall on a grid point.
+	Assumes that model files are in a subdirectory of the working directory, with that subdirectory called "phoenix"
+	and that the file names take the form "lte{temp}-{log g}-{metallicity}.BT-Settl.7.dat.txt"
+
+	Args: 
+		temperature (float): temperature value
+		log(g) (float): log(g) value
+		metallicity (float): Metallicity value
+
+	Note:
+		Values must fall on the grid points of the model grid.
+
+	Returns: 
+		file name of the phoenix model with the specified parameters.
+
+	"""
+	if temp < 2600:
+		temp = str(int(temp*1e-2)).zfill(3)
+		metal = str(float(metal)).zfill(3)
+		logg = str(float(logg)).zfill(3)
+		file = glob('phoenix/lte{}-{}-{}.BT-Settl.7.dat.txt'.format(temp, logg, metal))[0]
+		return file
+
+	else:
+		temp = str(int(temp*1e-2)).zfill(3)
+		metal = str(float(metal)).zfill(3)
+		logg = str(float(logg)).zfill(3)
+		file = glob('phoenix/lte{}-{}-0.0a+{}.BT-NextGen.7.dat.txt'.format(temp, logg, metal))[0]
+		return file
+
+
+def get_spec(temp, log_g, reg, metallicity = 0, normalize = True, wlunit = 'aa', pys = False, plot = False, model_dir = 'phoenix'):
+	"""Creates a spectrum from given parameters, either using the pysynphot utility from STScI or using a homemade interpolation scheme.
 	Pysynphot may be slightly more reliable, but the homemade interpolation is more efficient (by a factor of ~2).
-	input: temperature value, log(g) value, region array ([start, end]), metallicity (defaults to 0), normalize (defaults to True), 
-	wavelength unit (defaults to angstroms ('aa'), also supports microns ('um')), pys (use pysynphot) defaults to False, plot (defaults to False)
+	
+	TO DO: add a path variable so that this is more flexible, add contingency in the homemade interpolation for if metallicity is not zero
 
-	returns: a wavelength array and a flux array, in the specified units, as a tuple. Flux is in units of F_lambda (I think)
-	Uses the Phoenix models as the base for calculations. TO DO: add a path variable so that this is more flexible
+	Args: 
+		temp (float): temperature value
+		log_g (float): log(g) value
+		reg (list): region array ([start, end])
+		metallicity (float): Optional, defaults to 0
+		normalize (boolean): Optional, defaults to True
+		wlunit: Optional, wavelength unit. Defaults to angstroms ('aa'), also supports microns ('um').
+		pys (boolean): Optional, set to True use pysynphot. Defaults to False.
+		plot (boolean): Produces a plot of the output spectrum when it is a value in between the grid points and pys = False (defaults to False).
 
-	'''
+	Returns: 
+		a wavelength array and a flux array, in the specified units, as a tuple. Flux is in units of F_lambda (I think)
 
+	Note:
+		Uses the Phoenix models as the base for calculations. 
+
+	"""
 	if pys == True:
 	#grabs a phoenix spectrum using Icat calls via pysynphot (from STScI) defaults to microns
 	#get the spectrum
@@ -263,86 +424,101 @@ def get_spec(temp, log_g, reg, metallicity = 0, normalize = True, wlunit = 'aa',
 		#pick our temperature and log g values (assume metallicity is constant for now)
 		#pull a spectrum 
 
-		files = glob('phoenix/phoenixm00/*.fits')
-		temps = [int(files[n].split('.')[0].split('_')[1]) for n in range(len(files))]
-		temp2 = np.sort(temps)
-		idx = find_nearest(temp2, temp)
+		files = glob('phoenix/lte*.7.dat.txt')
+		t = sorted([int(files[n].split('-')[0].split('e')[2]) * 1e2 for n in range(len(files))])
+		temps = [min(t)]
 
-		if idx + 1 < len(temp2):
-			if temp2[idx] - temp == 0:
-				idx2 = idx
-			elif (temp2[idx-1] - temp) < (temp2[idx +1] - temp):
-				idx2 = idx - 1
-			else:
-				idx2 = idx + 1
+		for n, tt in enumerate(t):
+			if tt > temps[-1]:
+				temps.append(tt)
+
+		t1_idx = find_nearest(temps, temp)
+
+		if temps[t1_idx] == temp:
+			t2_idx = t1_idx
+		elif temps[t1_idx] > temp:
+			t2_idx = t1_idx - 1
 		else:
-			idx2 = idx
+			t2_idx = t1_idx + 1
 
-		lgs = np.arange(0, 6, 0.5)
-		lg = find_nearest(lgs, log_g)
-		if lg + 1 < len(lgs):
-			if lgs[lg] - log_g == 0:
-				lg2 = lg
-			if (lgs[lg-1] - log_g) > (lgs[lg + 1] - log_g):
-				lg2 = lg - 1
-			else:
-				lg2 = lg + 1
+		temp1 = temps[t1_idx]
+		temp2 = temps[t2_idx]
+
+		l = sorted([float(files[n].split('-')[1]) for n in range(len(files))])
+
+		lgs = [min(l)]
+
+		for n, tt in enumerate(l):
+			if tt > lgs[-1]:
+				lgs.append(tt)
+
+		lg1_idx = find_nearest(lgs, log_g)
+		 
+		if lgs[lg1_idx] == log_g:
+			lg2_idx = lg1_idx
+		elif lgs[lg1_idx] > log_g:
+			lg2_idx = lg1_idx - 1
 		else:
-			lg2 = lg
+			lg2_idx = lg1_idx + 1
 
-		lg = lgs[lg]
-		lg2 = lgs[lg2]
+		lg1 = lgs[lg1_idx]
+		lg2 = lgs[lg2_idx]
 
-		file1 = []
-		if idx != idx2:
-			file1 = fits.open(files[np.where(temps == temp2[min(idx, idx2)])[0][0]])[1]
+
+		file1 = find_model(temp1, lg1, 0)
+		if lg1 == lg2 and temp1 == temp2:
+			file2 = file1
 		else:
-			file1 = fits.open(files[np.where(temps == temp2[idx])[0][0]])[1]
-		file1 = Table.read(file1)
-		wl1 = file1['WAVELENGTH']
-		t1l1 = file1['g{}'.format(str(int(min(lg, lg2) * 10)).zfill(2))]
-		t1l2 = file1['g{}'.format(str(int(max(lg, lg2) * 10)).zfill(2))]
+			file2 = find_model(temp2, lg2, 0)
 
-		tl = []
-		if idx == idx2 and lg == lg2:
-			tl = file1['g{}'.format(str(int(lg * 10)).zfill(2))]
+		wl1, spec1 = np.genfromtxt(file1, unpack = True, autostrip = True)
+		wl2, spec2 = np.genfromtxt(file2, unpack = True, autostrip = True)
 
-		if idx == idx2 and lg != lg2:
-			tl = interp_2_spec(t1l1, t1l2, min(lg, lg2), max(lg, lg2), log_g)
-
-
-		if idx != idx2 and lg != lg2:
-			file2 = fits.open(files[np.where(temps == temp2[max(idx, idx2)])[0][0]])[1]
-			file2 = Table.read(file2)
-			wl2 = file2['WAVELENGTH']
-			t2l1 = file2['g{}'.format(str(int(min(lg, lg2) * 10)).zfill(2))]
-			t2l2 = file2['g{}'.format(str(int(max(lg, lg2) * 10)).zfill(2))]
+		if wlunit == 'um':
+			wl1 = [wl*1e-4 for wl in wl1]
+		if wlunit != 'um' and wlunit != 'aa':
+			factor = float(input('That unit is not recognized. Please input the multiplicative conversion factor to angstroms from your unit. For example, \
+				to convert to cm you would enter 1e-8. '))
+			wl1 = [w * factor for w in wl1]
 
 
-			t1l = interp_2_spec(t1l1, t1l2, min(lg, lg2), max(lg, lg2), log_g)
-			#print('t1l: ', t1l)
-			t2l = interp_2_spec(t2l1, t2l2, min(lg, lg2), max(lg, lg2), log_g)
-			##print('t2l: ', t2l)
+		t1wave, t1_inter = np.genfromtxt(find_model(temp1, lg2, 0), unpack = True, autostrip = True)
+		t2wave, t2_inter = np.genfromtxt(find_model(temp2, lg1, 0), unpack = True, autostrip = True)
 
-			tl = interp_2_spec(t1l, t2l, temps[min(idx, idx2)], temps[max(idx, idx2)], temp)
+		le= max(len(wl1), len(wl2), len(t1wave), len(t2wave))
+		wls = np.linspace(min(wl1), max(wl1), le*20)
+
+		iw1 = interp1d(wl1, spec1)
+		spec1 = iw1(wls)
+		iw2 = interp1d(wl2, spec2)
+		spec2 = iw2(wls)
+
+		it1 = interp1d(t1wave, t1_inter)
+		t1_inter = it1(wls)
+		it2 = interp1d(t2wave, t2_inter)
+		t2_inter = it2(wls)
+
+		t1_lg = interp_2_spec(spec1, t1_inter, lg1, lg2, log_g)
+		t2_lg = interp_2_spec(t2_inter, spec2, lg1, lg2, log_g)
+
+		tlg = interp_2_spec(t1_lg, t2_lg, temp1, temp2, temp)
 
 		if plot == True:
-			wl1a, tla = make_reg(wl1, tl, [1e4, 1e5])
-			wl1a, t1l1a = make_reg(wl1, t1l1, [1e4, 1e5])
-			wl1a, t1l2a = make_reg(wl1, t1l2, [1e4, 1e5])
+			wl1a, tla = make_reg(wls, tlg, [1e4, 1e5])
+			wl1a, t1l1a = make_reg(wls, t1_lg, [1e4, 1e5])
+			wl1a, t1l2a = make_reg(wls, t2_lg, [1e4, 1e5])
 			plt.loglog(wl1a, tla, label = 'tl')
 			plt.loglog(wl1a, t1l1a, label = 't1l1')
 			plt.loglog(wl1a, t1l2a, label = 't1l2')
 			plt.legend()
 			plt.show()
 		
-		spwave = wl1
-		spflux = tl
+		spwave = wls
+		spflux = tlg
 
 
 	reg = [reg[n] * 1e4 for n in range(len(reg))]
 	spwave, spflux = make_reg(spwave, spflux, reg)
-
 	#you can choose to normalize
 	if normalize == True:
 		if len(spflux) > 0:
@@ -354,28 +530,35 @@ def get_spec(temp, log_g, reg, metallicity = 0, normalize = True, wlunit = 'aa',
 	#return wavelength and flux as a tuple
 	if wlunit == 'aa': #return in angstroms
 		return spwave, spflux
-	if wlunit == 'um':
+	elif wlunit == 'um':
 		spwave = spwave * 1e-4
 		return spwave, spflux
-		
+	else:
+		factor = float(input('That unit is not recognized for the return unit. \
+			Please enter a multiplicative conversion factor to angstroms from your unit. For example, to convert to microns you would enter 1e-4.'))
+		spwave = [s * factor for s in spwave]
+		return spwave, spflux
+
 def add_spec(wl, spec, flux_ratio, normalize = True):#, waverange):
-	'''
-	add spectra together given an array of spectra and flux ratios
+	"""add spectra together given an array of spectra and flux ratios
 	TO DO: handle multiple flux ratios in different spectral ranges
 
-	input: wavelength array (of vectors), spectrum array (of vectors), 
-			flux ratio array with len = len(spectrum_array) - 1, 
-			where the final entry is the wavelength to normalize at, 
-			and whether or not to normalize (default is True)
-	output: spectra added together with the given flux ratio
-	'''
-	wl_norm = find_nearest(wl[1][:], flux_ratio[-1])
-	spec1 = spec[1][:]
-	for n in range(1, len(spec)-1):
-		spec2 = spec[n+1][:]
-		ratio = spec2[wl_norm]/spec1[wl_norm]
-		num = flux_ratio[n]/ratio
+	Args: 
+		wl (2-d array): wavelength array (of vectors)
+		spec (2-d array): spectrum array (of vectors), 
+		flux_ratio (array): flux ratio array with len = len(spectrum_array) - 1, where the final entry is the wavelength to normalize at, sand whether or not to normalize (default is True)
+		normalize (boolean): Normalize the spectra before adding them (default is True)
 
+	Returns: 
+		spec1 (list): spectra added together with the given flux ratio
+
+	"""
+	wl_norm = find_nearest(wl[0][:], flux_ratio[-1])
+	spec1 = spec[0][:]
+	for n in range(0, len(spec)-1):
+		spec2 = spec[n+1][:]
+		#ratio = spec2[wl_norm]/spec1[wl_norm]
+		num = flux_ratio[n]#/ratio
 		spec2 = [spec2[k] * num for k in range(len(spec1))]
 		spec1 = [spec1[k] + spec2[k] for k in range(len(spec1))]
 	if normalize == True:
@@ -384,9 +567,18 @@ def add_spec(wl, spec, flux_ratio, normalize = True):#, waverange):
 	return spec1
 
 def make_bb_continuum(wl, spec, dust_arr, wl_unit = 'um'):
-	'''
+	"""Adds a dust continuum to an input spectrum.
 
-	'''
+	Args:
+		wl (list): wavelength array
+		spec (list): spectrum array
+		dust_arr (list): an array of dust temperatures
+		wl_unit (string): wavelength unit - supports 'aa' or 'um'. Default is 'um'.
+
+	Returns:
+		a spectrum array with dust continuum values added to the flux.
+
+	"""
 	h = 6.6261e-34 #J * s
 	c = 2.998e8 #m/s
 	kb = 1.3806e-23 # J/K
@@ -408,14 +600,30 @@ def make_bb_continuum(wl, spec, dust_arr, wl_unit = 'um'):
 
 def fit_spec(n_walkers, wl, flux, reg, fr, guess_init, sig_init = {'t':[200, 200], 'lg':[0.2, 0.2], \
 		'dust': [100]}, wu='um', burn = 100, cs = 10, steps = 200, pysyn=False, conv = True, dust = False):
-	##print(guess_init)
-	#does an MCMC to fit a combined model spectrum to an observed single spectrum
-	#guess_init and sig_init should be dictionaries of component names and values for the input guess and the 
-	#prior standard deviation, respectively. 
-	#assumes they have the same metallicity
-	#the code will expect an dictionary with values for temperature ('t'), log g ('lg'), and dust ('dust') right now
-	#TO DO: add line broadening, disk/dust to possible fit params
+	"""Does an MCMC to fit a combined model spectrum to an observed single spectrum.
+	guess_init and sig_init should be dictionaries of component names and values for the input guess and the 
+	prior standard deviation, respectively. 
+	Assumes they have the same metallicity.
+	The code will expect an dictionary with values for temperature ('t'), log g ('lg'), and dust ('dust') right now.
+	TO DO: add line broadening, disk/dust to possible fit params.
 
+	Args:
+		n_walkers (int): number of walkers
+		wl (list): wavelength array
+		flux (list): spectrum array
+		reg (list): Two value array with start and end points for fitting.
+		fr (list): flux ratio array. Value1 is flux ratio, value2 is location in the spectrum of value1, etc.
+		guess_init (dictionary): dictionary of component names and values for the input guess. The code will expect an dictionary with values for temperature ('t'), log g ('lg'), and dust ('dust').
+		sig_init (dictionary): A dictionary with corresponding standard deviations for each input guess. Default is 200 for temperature, 0.2 for log(g)
+		wu (string): wavelength unit. currently supports 'aa' or 'um'. Default: "um".
+		burn (int): how many initial steps to discard to make sure walkers are spread out. Default: 100.
+		cs (int): cutoff chi square to decide convergence. Default: 10.
+		steps (int): maximum steps to take after the burn-in steps. Default: 200.
+		pysyn (Bool): Boolean command of whether or not to use pysynphot for spectral synthesis. Default: False
+		conv (Bool): Use chi-square for convergence (True) or the number of steps (False). Default: True.
+		dust (Bool): Add a dust spectrum. Default: False.
+
+	"""
 	if 'm' in guess_init:
 		metal = guess_init['m']
 	else:
@@ -515,22 +723,32 @@ def run_mcmc(walk, w, flux, regg, fr, temp_vals, lg_vals):
 	return
 
 def loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', pysyn = False, dust = False, norm = True):
-	"""
-	The natural logarithm of the joint likelihood. 
+	"""The natural logarithm of the joint likelihood. 
 	Set to the chisquare value. (we want uniform acceptance weighted by the significance)
 	
 	Possible kwargs are reg (region), wlunit ('um' or 'aa'), dust (defaults to False), \
 		normalize (defaults to True), pysyn (defaults to False), 
-		For more help 
-	Args:
-		p0 (list): a sample containing individual parameter values
-		Then p0[0: n] = temp, p0[n : 2n] = lg, p0[2n : -1] = dust temps
-		data (list): the set of data/observations
-	Note:
-		We do not include the normalisation constants (as discussed above).
 
-	current options: arbitrary stars, dust (multi-valued). 
-	To do: fit for broadening or vsini,  
+	Args:
+		p0 (list): a sample containing individual parameter values. Then p0[0: n] = temp, p0[n : 2n] = lg, p0[2n : -1] = dust temps
+		nspec (int): number of spectra/stars
+		ndust (int): number of dust continuum components
+		data (list): the set of data/observations
+		flux_ratio (array): set of flux ratios with corresponding wavelength value for location of ratio
+		broadening (int): The instrumental resolution of the spectra
+		r (list): region to use when calculating liklihood
+		w (string): Wavelength unit, options are "aa" and "um". Default is "aa".
+		pysyn (bool): Use pysynphot to calculate spectra. Default is False.
+		dust (bool): Add dust continuum? Default is False.
+		norm (bool): Normalize spectra when fitting. Default is True.
+
+	Returns: 
+		cs (float): a reduced chi square value corresponding to the quality of the fit.
+
+	Note:
+		current options: arbitrary stars, dust (multi-valued). 
+		To do: fit for broadening or vsini.
+
 	"""
 	le = len(data[:][1])
 
@@ -574,54 +792,85 @@ def loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = 'aa', p
 
 def logprior(p0, nspec, ndust):
 	temps = p0[0:nspec]
-	lgs = []
+	lgs = [p0[nspec]]
 
-	if len(p0) > nspec:
-		lgs = p0[nspec:2 * nspec]
-	else:
-		while len(lgs) < nspec:
-			lgs.append(4.5)
 	if ndust > 0:
 		dust = p0[2 * nspec : 2 * nspec + ndust]
 	for p in range(nspec):
-		if 2000 < temps[p] < 5000 and 2 < lgs[p] < 5.5:
+		if 400 <= temps[p] <= 6500 and 3.5 <= lgs[p] <= 5:
 			return 0.0
 		else:
 			return -np.inf
 
 def logposterior(p0, nspec, ndust, data, flux_ratio, broadening, r, wu = 'aa', pysyn = False, dust = False, norm = True):
-	"""
-	The natural logarithm of the joint posterior.
+	"""The natural logarithm of the joint posterior.
 
 	Args:
-		p0 (list): a sample containing individual parameter values/
+		p0 (list): a sample containing individual parameter values. Then p0[0: n] = temp, p0[n : 2n] = lg, p0[2n : -1] = dust temps
+		nspec (int): number of spectra/stars
+		ndust (int): number of dust continuum components
 		data (list): the set of data/observations
-	Assuming a uniform prior for now
+		flux_ratio (array): set of flux ratios with corresponding wavelength value for location of ratio
+		broadening (int): The instrumental resolution of the spectra
+		r (list): region to use when calculating liklihood
+		w (string): Wavelength unit, options are "aa" and "um". Default is "aa".
+		pysyn (bool): Use pysynphot to calculate spectra. Default is False.
+		dust (bool): Add dust continuum? Default is False.
+		norm (bool): Normalize spectra when fitting. Default is True.
+
+	Returns: 
+		lh (float): The log of the liklihood of the fit being pulled from the model distribution.
+
+	Note:
+		Assuming a uniform prior for now
+
 	"""
 	lp = logprior(p0, nspec, ndust)
 
 	# if the prior is not finite return a probability of zero (log probability of -inf)
 	if not np.isfinite(lp):
 		return -np.inf
-
 	lh = loglikelihood(p0, nspec, ndust, data, flux_ratio, broadening, r, w = wu, pysyn = False, dust = False, norm = True)
 	# return the likeihood times the prior (log likelihood plus the log prior)
 	return lp + lh
 
 
-def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio, broadening, r, nthin=10, w = 'aa', pys = False, du = False, no = True, which='em'):
-	'''
-	p0 is a dictionary containing the initial guesses for temperature and log g.
-	data is the spectrum to fit to
-	flux ratio is self-explanatory, but is an array
-	r is the region to fit within
-	'''
+def run_emcee(fname, nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio, broadening, r, nthin=10, w = 'aa', pys = False, du = False, no = True, which='em'):
+	"""Run the emcee code to fit a spectrum 
 
+	Args:
+		fname (string): input file name to use
+		nwalkers (int): number of walkers to use
+		nsteps (int): number of steps for each walker to take
+		ndim (int): number of dimensions to fit to. For a single spectrum to fit temperature and log(g) for, ndim would be 2, for example. 
+		nburn (int): number of steps to discard before starting the sampling. Should be large enough that the walkers are well distributed before sampling starts.
+		pos (list): array containing the initial guesses for temperature and log g.
+		nspec (int): number of spectra to fit to. For a single spectrum fit this would be 1, for a two component fit this should be 2.
+		ndust (int): number of dust continuum components to fit to. (untested)
+		data (list): the spectrum to fit to
+		flux_ratio (list): an array with a series of flux ratios, followed by the wavelength at which they were measured.
+		broadening (float): the instrumental resolution of the input data, or the desired resolution to use to fit.
+		r (list): a two valued array containing the region to fit within, in microns.
+		nthin (int): the sampling rate of walker steps to save. Default is 10.
+		w (string): the wavelength unit to use. Accepts 'um' and 'aa'. Default is 'aa'.
+		pys (boolean): Whether to use pysynphot for spectral synthesis (if true). Default is False.
+		du (boolean): Whether to fit to dust components. Default is False.
+		no (boolean): Whether to normalize the spectra while fitting. Default is True.
+		which (string): Use an ensemble sampler ('em') or parallel tempered sampling ('pt'). Default is 'em'. More documentation can be found in the emcee docs.
+	
+	Note:
+		This is still in active development and doesn't always work.
+
+	"""
 	if which == 'em':
 		sampler = emcee.EnsembleSampler(nwalkers, ndim, logposterior, threads=nwalkers, args=[nspec, ndust, data, flux_ratio, broadening, r], \
-		kwargs={'wu':w, 'pysyn': pys, 'dust': du, 'norm':no})
+		kwargs={'pysyn': pys, 'dust': du, 'norm':no})
 
-	elif which == 'pt':
+		for p, lnprob, lnlike in sampler.sample(pos, iterations=nburn):
+			pass
+		sampler.reset()
+
+	if which == 'pt':
 		ntemps = int(input('How many temperatures would you like to try? '))
 		sampler = emcee.PTSampler(ntemps, nwalkers, ndim, loglikelihood, logprior, threads=nwalkers, loglargs=[\
 		nspec, ndust, data, flux_ratio, broadening, r], logpargs=[nspec, ndust], loglkwargs={'w':w, 'pysyn': pys, 'dust': du, 'norm':no})
@@ -647,25 +896,18 @@ def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio
 		except:
 			pass
 
-	f = open("results/chain.txt", "w")
+	f = open("results/{}_chain.txt".format(fname), "w")
 	f.close()
-
-	for test in sampler.sample(pos, iterations = nburn, thin = nthin):
-		pos = test[0]
-		pass
-	sampler.reset()
 	
 	for result in sampler.sample(pos, iterations=nsteps, thin = nthin):
-		position = result[0]
-		f = open("results/chain.txt", "w")
-		for k in range(position.shape[0]):
-			f.write("{} {}\n".format(k, str(position[k])))
+		f = open("results/{}_chain.txt".format(fname), "w")
+		f.write("{}\n".format(result))
 		f.close()
 	for i in range(ndim):
 		plt.figure(i)
 		plt.hist(sampler.flatchain[:,i], nsteps, histtype="step")
 		plt.title("Dimension {0:d}".format(i))
-		plt.savefig('results/plots/{}.pdf'.format(i))
+		plt.savefig('results/plots/{}_{}.pdf'.format(fname, i))
 		plt.close()
 
 		plt.figure(i)
@@ -673,7 +915,7 @@ def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio
 		try:
 			for n in range(nwalkers):
 				plt.plot(np.arange(nsteps),sampler.chain[n, :, i])
-			plt.savefig('results/plots/chain_{}.pdf'.format(i))
+			plt.savefig('results/plots/{}_chain_{}.pdf'.format(fname, i))
 			plt.close()
 		except:
 			pass
@@ -691,14 +933,14 @@ def run_emcee(nwalkers, nsteps, ndim, nburn, pos, nspec, ndust, data, flux_ratio
 		plt.xlabel("number of samples, N")
 		plt.ylabel("tau estimates")
 		plt.legend(fontsize=14);
-		plt.savefig('results/plots/autocorr.pdf')
+		plt.savefig('results/plots/{}_autocorr.pdf'.format(fname))
 		plt.close()
 	except:
 		pass;
 
 	samples = sampler.chain[:, :, :].reshape((-1, ndim))
 	fig = corner.corner(samples)
-	fig.savefig("results/plots/triangle.pdf")
+	fig.savefig("results/plots/{}_triangle.pdf".format(fname))
 	plt.close()
 
 	print("Mean acceptance fraction: {0:.3f}".format(np.mean(sampler.acceptance_fraction)))
