@@ -336,7 +336,9 @@ def interp_2_spec(spec1, spec2, ep1, ep2, val):
 	ret_arr = []
 	if len(spec1) == len(spec2):
 		for n in range(len(spec1)):
-			v = np.interp(val, [ep1, ep2], [spec1[n], spec2[n]])
+			v = ((spec2[n] - spec1[n])/(ep2 - ep1)) * (val - ep1) + spec1[n]#np.interp(val, np.array([ep1, ep2]), np.array([spec1[n], spec2[n]]))
+			#tv = interp1d(np.array([ep1, ep2]), np.array([spec1[n], spec2[n]]))
+			#v = tv(val)
 			# v = np.abs((spec1[n] * (ep2 - val) + spec2[n] * (val - ep2))/(ep2 - ep1))
 			# if np.isnan(v) or np.isinf(v) or v < 0:
 			# 	print('There are undefined values in the interpolation. Here are the input parameters: \n', spec1[n], spec2[n], ep1, ep2, v)
@@ -506,10 +508,17 @@ def get_spec(temp, log_g, reg, metallicity = 0, normalize = True, wlunit = 'aa',
 			it2 = interp1d(t2wave, t2_inter)
 			t2_inter = it2(wls)
 
-			t1_lg = interp_2_spec(spec1, t1_inter, lg1, lg2, log_g)
-			t2_lg = interp_2_spec(t2_inter, spec2, lg1, lg2, log_g)
+			if lg1 != lg2 and temp1 != temp2:
+				t1_lg = interp_2_spec(spec1, t1_inter, lg1, lg2, log_g)
+				t2_lg = interp_2_spec(t2_inter, spec2, lg1, lg2, log_g)
 
-			tlg = interp_2_spec(t1_lg, t2_lg, temp1, temp2, temp)
+				tlg = interp_2_spec(t1_lg, t2_lg, temp1, temp2, temp)
+
+			elif lg1 == lg2:
+				tlg = interp_2_spec(spec1, spec2, temp1, temp2, temp)
+
+			elif temp1 == temp2:
+				tlg = interp_2_spec(spec1, spec2, lg1, lg2, log_g)
 
 			if plot == True:
 				wl1a, tla = make_reg(wls, tlg, [1e4, 1e5])
