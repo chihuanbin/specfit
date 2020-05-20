@@ -3,8 +3,8 @@ API
 
 The API for the various specfit functionalities is documented to the best of my ability below.
 
-IMF.py
--------------
+IMF (synthetic population productions)
+----------------------------------------
 
 .. automodule:: IMF
    :members:
